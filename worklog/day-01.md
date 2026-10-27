@@ -10,6 +10,8 @@ Setup and preparation: set up the repo, describe the project, and inventory the 
 - Found all the hardware I previously ordered.
 - Verified that everything needed seems to be available. Nothing needs to be ordered — important, because long delivery times would have been a problem.
 
+![Hardware Inventory](attachments/day-01-hardware-inventory.jpeg)
+
 ## Failed / blocked
 
 - Nothing blocked.
