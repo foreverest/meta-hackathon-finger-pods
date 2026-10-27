@@ -1,29 +1,27 @@
-# Day 1 — _YYYY-MM-DD_
+# Day 1 — 2026-10-26
 
 ## Goal
 
-_TODO: e.g. inventory parts, wire one magnetometer + one button, see live readings._
+Setup and preparation: set up the repo, describe the project, and inventory the hardware ordered before the hackathon.
 
 ## Done
 
-- _TODO_
-
-## Evidence
-
-_TODO: photo of the bench / first sensor plot._
+- Set up the repo and described the project in the README.
+- Found all the hardware I previously ordered.
+- Verified that everything needed seems to be available. Nothing needs to be ordered — important, because long delivery times would have been a problem.
 
 ## Failed / blocked
 
-- _TODO_
+- Nothing blocked.
 
 ## Learned
 
-- _TODO_
+- All needed hardware and tools seems to be on hand, so assembly can start tomorrow.
 
 ## Decision
 
-- _TODO_
+- Assemble the device so the 3D-printed finger clips can be replaced without disassembling too much. The 3D models will likely need more work for the prototype, so swapping clips needs to be easy.
 
 ## Tomorrow
 
-- _TODO_
+- Assemble a first version of the device with easily replaceable finger clips.
