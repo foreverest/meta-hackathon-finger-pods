@@ -119,17 +119,16 @@ def collect_baseline(source_iter, seconds):
     return baseline
 
 
-def wait_for_press(source_iter, stream_writer, prompt_label, timeout_s):
-    """Wait for a button press edge. Returns the press frame or None.
+def wait_for_press(source_iter, stream_writer, prompt_label):
+    """Wait for a button press edge, however long that takes.
 
-    Caller guarantees buttons start released, so the first frame with a
-    pressed button is the edge (the snapshot we train on).
+    There is deliberately no timeout: a prompt waits until a button is
+    pressed. Returns the press frame, or None only if the source is
+    exhausted. Caller guarantees buttons start released, so the first
+    frame with a pressed button is the edge (the snapshot we train on).
     """
-    deadline = time.monotonic() + timeout_s
     for frame in source_iter:
         if frame is None:
-            if time.monotonic() > deadline:
-                return None
             continue
         t_host, t_dev, mag, buttons = frame
         if stream_writer:
@@ -138,8 +137,6 @@ def wait_for_press(source_iter, stream_writer, prompt_label, timeout_s):
                 + [f"{v:.2f}" for v in mag] + buttons + [prompt_label])
         if any(buttons):
             return frame
-        if time.monotonic() > deadline:
-            return None
     return None
 
 
@@ -163,13 +160,12 @@ def main():
                     help="serial port (default: auto-detect)")
     ap.add_argument("--baud", type=int, default=115200)
     ap.add_argument("--reps", type=int, default=20,
-                    help="presses per key (default 20; 15 keys x 20 = 300)")
+                    help="presses per key (default 20; 16 keys x 20 = 320)")
     ap.add_argument("--keys", default=None,
-                    help="comma-separated subset of labels, e.g. 'h,j,k,l'")
+                    help="comma-separated subset of labels, e.g. 'h,j,k,l' "
+                         "(use SPACE for the space key)")
     ap.add_argument("--out", default="data", help="output directory")
     ap.add_argument("--cal-seconds", type=float, default=3.0)
-    ap.add_argument("--timeout", type=float, default=15.0,
-                    help="seconds to wait per prompt before skipping")
     ap.add_argument("--seed", type=int, default=None)
     ap.add_argument("--simulate", action="store_true",
                     help="fabricate data, no hardware needed")
@@ -177,11 +173,12 @@ def main():
                     help="do not save the raw stream CSV")
     args = ap.parse_args()
 
-    labels = ([k.strip() for k in args.keys.split(",") if k.strip()]
+    labels = (fp.parse_key_subset(args.keys)
               if args.keys else list(fp.LABELS))
     unknown = [k for k in labels if k not in fp.KEY_INFO]
     if unknown:
-        ap.error(f"unknown key labels: {unknown}; valid: {fp.LABELS}")
+        ap.error(f"unknown key labels: {unknown}; "
+                 f"valid: {[fp.display_label(l) for l in fp.LABELS]}")
 
     if args.simulate:
         source = SimulateSource(seed=args.seed or 0)
@@ -223,13 +220,14 @@ def main():
               "Press the pod as if typing the shown key. Ctrl-C to stop.\n")
         for idx, label in enumerate(prompts, 1):
             finger, row = fp.KEY_INFO[label]
-            print(f"[{idx}/{len(prompts)}]  >>>  '{label}'  "
-                  f"({finger}, {row} row)  ", end="", flush=True)
+            where = "thumb" if label == " " else f"{finger}, {row} row"
+            print(f"[{idx}/{len(prompts)}]  >>>  '{fp.display_label(label)}'  "
+                  f"({where})  ", end="", flush=True)
             if args.simulate:
                 source.pending_label = label
-            frame = wait_for_press(source_iter, stream_w, label, args.timeout)
+            frame = wait_for_press(source_iter, stream_w, label)
             if frame is None:
-                print("... skipped (timeout)")
+                print("... skipped (input ended)")
                 skipped += 1
                 continue
             t_host, t_dev, mag, buttons = frame

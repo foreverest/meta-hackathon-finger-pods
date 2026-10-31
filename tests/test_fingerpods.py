@@ -14,13 +14,21 @@ import fingerpods as fp
 
 class LayoutTest(unittest.TestCase):
     def test_three_rows_right_hand(self):
-        self.assertEqual(len(fp.LABELS), 15)
-        self.assertEqual(len(set(fp.LABELS)), 15)
+        self.assertEqual(len(fp.LABELS), 16)
+        self.assertEqual(len(set(fp.LABELS)), 16)
         rows = {r: [k for k, (_f, rr) in fp.KEY_INFO.items() if rr == r]
                 for r in fp.ROWS}
         self.assertEqual(sorted(rows["top"]), sorted(list("yuiop")))
         self.assertEqual(sorted(rows["home"]), sorted(["h", "j", "k", "l", ";"]))
         self.assertEqual(sorted(rows["bottom"]), sorted(["n", "m", ",", ".", "/"]))
+
+    def test_space_is_thumb_key(self):
+        self.assertIn(" ", fp.LABELS)
+        self.assertEqual(fp.KEY_INFO[" "], ("thumb", "space"))
+        self.assertEqual(fp.display_label(" "), "SPACE")
+        rng = random.Random(0)
+        _mag, buttons = fp.synthetic_press(" ", rng)
+        self.assertEqual(fp.active_button(buttons), 4)
 
     def test_one_button_can_emit_several_keys(self):
         # In simulation each finger owns one button, yet the index finger
@@ -59,7 +67,7 @@ class ProtocolTest(unittest.TestCase):
 
     def test_prompts_randomised_counts(self):
         prompts = fp.shuffled_prompts(3, seed=42)
-        self.assertEqual(len(prompts), 45)
+        self.assertEqual(len(prompts), 48)
         for label in fp.LABELS:
             self.assertEqual(prompts.count(label), 3)
 

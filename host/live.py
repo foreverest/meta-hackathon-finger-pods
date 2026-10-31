@@ -70,7 +70,7 @@ def main():
                 if label is None:
                     break
                 source.pending_label = label
-            frame = wait_for_press(source_iter, None, "", timeout_s=3600)
+            frame = wait_for_press(source_iter, None, "")
             if frame is None:
                 continue
             _th, _td, mag, buttons = frame

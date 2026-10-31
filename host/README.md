@@ -10,6 +10,7 @@ moment tells it *which key that finger was reaching for*.
 | Top | `y u i o p` |
 | Home | `h j k l ;` |
 | Bottom | `n m , . /` |
+| Thumb | `SPACE` |
 
 Finger assignment is standard touch-typing: index covers `y/u, h/j, n/m`,
 middle `i, k, ,`, ring `o, l, .`, pinky `p, ;, /`.

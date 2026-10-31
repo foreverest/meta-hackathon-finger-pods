@@ -50,9 +50,10 @@ def report(name, y_true, y_pred, labels):
     print(f"\n{name}: accuracy {acc:.3f}  ({len(y_true)} presses)")
     cm = confusion_matrix(y_true, y_pred, labels=labels)
     print("confusion (rows=true, cols=pred):")
-    print("      " + " ".join(f"{l:>4}" for l in labels))
+    print("      " + " ".join(f"{fp.display_label(l):>5}" for l in labels))
     for lab, rowvals in zip(labels, cm):
-        print(f"{lab:>5} " + " ".join(f"{v:4d}" for v in rowvals))
+        print(f"{fp.display_label(lab):>5} "
+              + " ".join(f"{v:5d}" for v in rowvals))
     return acc
 
 

@@ -1,9 +1,9 @@
 """Shared definitions for Finger Pods host tools.
 
-Right-hand-only layout over three QWERTY rows. One physical button can
-emit different keystrokes depending on hand pose: the button index is a
-feature, not the label. The magnetometer vector at the press moment is
-what disambiguates keys that share a button/finger.
+Right-hand-only layout over three QWERTY rows, plus thumb space. One
+physical button can emit different keystrokes depending on hand pose:
+the button index is a feature, not the label. The magnetometer vector
+at the press moment is what disambiguates keys that share a button.
 
 Stream protocol (from firmware/stream.py), one CSV line per sample:
     t_ms,m0x,m0y,m0z,m1x,m1y,m1z,m2x,m2y,m2z,b0,...,b8
@@ -31,10 +31,28 @@ KEYS = [
     (",", "middle", "bottom"),
     (".", "ring", "bottom"),
     ("/", "pinky", "bottom"),
+    # thumb
+    (" ", "thumb", "space"),
 ]
 
 LABELS = [label for label, _finger, _row in KEYS]
 KEY_INFO = {label: (finger, row) for label, finger, row in KEYS}
+
+
+def display_label(label):
+    """Human-readable label for prompts/reports (' ' shows as SPACE)."""
+    return "SPACE" if label == " " else label
+
+
+def parse_key_subset(text):
+    """Parse a --keys value; the token SPACE (any case) means ' '."""
+    labels = []
+    for token in text.split(","):
+        token = token.strip()
+        if not token:
+            continue
+        labels.append(" " if token.upper() == "SPACE" else token)
+    return labels
 FINGERS = ["thumb", "index", "middle", "ring", "pinky"]
 ROWS = ["top", "home", "bottom"]
 
@@ -99,13 +117,13 @@ def feature_vector(cal_mag, buttons):
 # Each finger owns one "primary" button in simulation, so several labels
 # share a button exactly like the real device. Poses differ per key.
 _SIM_BUTTON = {"index": 0, "middle": 1, "ring": 2, "pinky": 3, "thumb": 4}
-_SIM_ROW_OFFSET = {"top": -18.0, "home": 0.0, "bottom": 18.0}
+_SIM_ROW_OFFSET = {"top": -18.0, "home": 0.0, "bottom": 18.0, "space": 0.0}
 _SIM_FINGER_BASE = {
     "index": [35.0, -20.0, 55.0, 10.0, 25.0, -30.0, -15.0, 5.0, 40.0],
     "middle": [5.0, 30.0, 20.0, -25.0, -10.0, 45.0, 20.0, -35.0, 10.0],
     "ring": [-20.0, 10.0, 35.0, 30.0, -40.0, 5.0, -5.0, 20.0, -25.0],
     "pinky": [50.0, 15.0, -10.0, -30.0, 20.0, 25.0, 35.0, -15.0, -5.0],
-    "thumb": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+    "thumb": [-35.0, 25.0, 15.0, 15.0, -20.0, -35.0, 25.0, 30.0, 20.0],
 }
 # Index covers two columns per row (y/u, h/j, n/m): offset by column.
 _SIM_COL_OFFSET = {"y": -12.0, "u": 12.0, "h": -12.0, "j": 12.0,
