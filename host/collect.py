@@ -18,12 +18,18 @@ Output (in data/ by default), one set per sitting:
 
 Take the clips off and put them back on between sessions: cross-session
 accuracy is the number that matters, so collect at least two sessions.
+
+Pressed the wrong key for a prompt? Press Backspace (or Delete, or 'u')
+while the next prompt is waiting: the most recent press is removed and
+its key is prompted again next. Only undo a genuinely wrong key -- a
+correct-but-sloppy press is useful training data.
 """
 
 import argparse
 import csv
 import glob
 import json
+import os
 import random
 import sys
 import time
@@ -41,6 +47,119 @@ def find_port():
         if hits:
             return hits[0]
     return None
+
+
+# --- Undoing a bad press -------------------------------------------------
+# Sentinel returned by wait_for_press() when the user asks to delete the
+# most recent recorded press instead of pressing a pod.
+UNDO = object()
+
+_UNDO_CHARS = frozenset("uU\x7f\x08")  # 'u', Backspace (DEL and BS)
+_DELETE_SEQUENCE = "\x1b[3~"           # Delete key in most terminals
+
+
+def is_undo_input(data):
+    """True if a chunk of terminal input asks to undo the last press."""
+    if isinstance(data, (bytes, bytearray)):
+        data = bytes(data).decode("utf-8", errors="ignore")
+    if not data:
+        return False
+    return (data.startswith(_DELETE_SEQUENCE)
+            or any(ch in _UNDO_CHARS for ch in data))
+
+
+class UndoPoller:
+    """Non-blocking check for an undo keypress on the terminal.
+
+    Only active when stdin is a TTY: it switches the terminal to cbreak
+    mode (restored by close()) so single keypresses can be read without
+    waiting for Enter. Ctrl-C still interrupts. On a non-TTY stdin (pipe,
+    redirect, tests) poll() always returns False.
+    """
+
+    def __init__(self, stream=None):
+        self._stream = stream if stream is not None else sys.stdin
+        self._fd = None
+        self._saved_termios = None
+        try:
+            fd = self._stream.fileno()
+        except (AttributeError, ValueError, OSError):
+            fd = None
+        if fd is not None and fd >= 0:
+            try:
+                if os.isatty(fd):
+                    self._fd = fd
+            except OSError:
+                pass
+
+    def open(self):
+        if self._fd is None or self._saved_termios is not None:
+            return self
+        try:
+            import termios
+            import tty
+
+            self._saved_termios = termios.tcgetattr(self._fd)
+            tty.setcbreak(self._fd)
+        except Exception:
+            self._saved_termios = None
+        return self
+
+    def close(self):
+        if self._fd is not None and self._saved_termios is not None:
+            try:
+                import termios
+
+                termios.tcsetattr(self._fd, termios.TCSADRAIN,
+                                  self._saved_termios)
+            except Exception:
+                pass
+            self._saved_termios = None
+
+    def __enter__(self):
+        return self.open()
+
+    def __exit__(self, *exc):
+        self.close()
+        return False
+
+    def poll(self):
+        """True (once per keypress chunk) if an undo key was pressed."""
+        if self._fd is None:
+            return False
+        try:
+            import select
+
+            ready, _, _ = select.select([self._fd], [], [], 0)
+        except (OSError, ValueError):
+            return False
+        if not ready:
+            return False
+        try:
+            data = os.read(self._fd, 32)
+        except OSError:
+            return False
+        if not data:
+            return False
+        text = data.decode("utf-8", errors="ignore")
+        if "\x03" in text:  # Ctrl-C, in case the terminal left ISIG off
+            raise KeyboardInterrupt
+        return is_undo_input(text)
+
+
+def undo_last_press(rows, queue):
+    """Remove the most recent recorded press and re-prompt its label.
+
+    The label goes to the front of `queue` (the pending prompts), so it
+    is the next key prompted; a prompt already in progress is shifted
+    behind it, not lost. Returns the removed row, or None when there is
+    nothing recorded yet.
+    """
+    if not rows:
+        return None
+    removed = rows.pop()
+    queue.insert(0, removed[2])  # column 2 is 'label' in SESSION_COLS
+    return removed
 
 
 class SerialSource:
@@ -119,15 +238,19 @@ def collect_baseline(source_iter, seconds):
     return baseline
 
 
-def wait_for_press(source_iter, stream_writer, prompt_label):
+def wait_for_press(source_iter, stream_writer, prompt_label,
+                   undo_poller=None):
     """Wait for a button press edge, however long that takes.
 
     There is deliberately no timeout: a prompt waits until a button is
-    pressed. Returns the press frame, or None only if the source is
-    exhausted. Caller guarantees buttons start released, so the first
-    frame with a pressed button is the edge (the snapshot we train on).
+    pressed. Returns the press frame, the UNDO sentinel if the user
+    pressed an undo key first, or None only if the source is exhausted.
+    Caller guarantees buttons start released, so the first frame with a
+    pressed button is the edge (the snapshot we train on).
     """
     for frame in source_iter:
+        if undo_poller is not None and undo_poller.poll():
+            return UNDO
         if frame is None:
             continue
         t_host, t_dev, mag, buttons = frame
@@ -140,8 +263,17 @@ def wait_for_press(source_iter, stream_writer, prompt_label):
     return None
 
 
-def wait_for_release(source_iter, stream_writer, prompt_label):
+def wait_for_release(source_iter, stream_writer, prompt_label,
+                     undo_poller=None):
+    """Wait until all buttons are released.
+
+    Returns True if an undo key was pressed while waiting (latched, so
+    the release is still waited for), otherwise False.
+    """
+    undo = False
     for frame in source_iter:
+        if undo_poller is not None and undo_poller.poll():
+            undo = True
         if frame is None:
             continue
         t_host, t_dev, mag, buttons = frame
@@ -150,7 +282,8 @@ def wait_for_release(source_iter, stream_writer, prompt_label):
                 [f"{t_host:.3f}", t_dev]
                 + [f"{v:.2f}" for v in mag] + buttons + [prompt_label])
         if not any(buttons):
-            return
+            return undo
+    return undo
 
 
 def main():
@@ -200,11 +333,14 @@ def main():
     meta_path = out_dir / f"{session}.json"
 
     prompts = fp.shuffled_prompts(args.reps, labels, seed=args.seed)
-    rows, skipped = [], 0
+    queue = list(prompts)  # pending prompts; undone labels re-enter here
+    rows, skipped, deleted = [], 0, 0
     baseline = None
 
     stream_f = stream_w = None
+    undo_poller = UndoPoller()
     try:
+        undo_poller.open()
         if not args.no_stream:
             stream_f = open(stream_path, "w", newline="")
             stream_w = csv.writer(stream_f)
@@ -217,19 +353,39 @@ def main():
             source.baseline = baseline  # keep sim poses relative to rest
 
         print(f"\n{len(prompts)} prompts ({args.reps} x {len(labels)} keys). "
-              "Press the pod as if typing the shown key. Ctrl-C to stop.\n")
-        for idx, label in enumerate(prompts, 1):
+              "Press the pod as if typing the shown key.\n"
+              "Wrong key? Press Backspace or 'u' to delete the previous "
+              "press and re-prompt it (only for a wrong key, not a sloppy "
+              "one). Ctrl-C to stop.\n")
+        while queue:
+            label = queue[0]
             finger, row = fp.KEY_INFO[label]
             where = "thumb" if label == " " else f"{finger}, {row} row"
-            print(f"[{idx}/{len(prompts)}]  >>>  '{fp.display_label(label)}'  "
-                  f"({where})  ", end="", flush=True)
+            print(f"[{len(rows) + 1}/{len(prompts)}]  >>>  "
+                  f"'{fp.display_label(label)}'  ({where})  ",
+                  end="", flush=True)
             if args.simulate:
                 source.pending_label = label
-            frame = wait_for_press(source_iter, stream_w, label)
+            frame = wait_for_press(source_iter, stream_w, label,
+                                   undo_poller=undo_poller)
+            if frame is UNDO:
+                removed = undo_last_press(rows, queue)
+                if removed is None:
+                    print("\n  (nothing to undo yet)")
+                else:
+                    deleted += 1
+                    print(f"\n  deleted '{fp.display_label(removed[2])}' "
+                          f"- re-prompting it next")
+                # Keep the invariant that the next prompt starts with
+                # buttons released, in case a press raced with the undo.
+                wait_for_release(source_iter, stream_w, label)
+                continue
             if frame is None:
                 print("... skipped (input ended)")
                 skipped += 1
+                queue.pop(0)
                 continue
+            queue.pop(0)
             t_host, t_dev, mag, buttons = frame
             btn = fp.active_button(buttons)
             cal = fp.calibrate(mag, baseline)
@@ -240,10 +396,17 @@ def main():
                 + [f"{v:.2f}" for v in cal]
                 + buttons)
             print(f"ok (button b{btn})")
-            wait_for_release(source_iter, stream_w, label)
+            if wait_for_release(source_iter, stream_w, label,
+                                undo_poller=undo_poller):
+                removed = undo_last_press(rows, queue)
+                if removed is not None:
+                    deleted += 1
+                    print(f"  deleted '{fp.display_label(removed[2])}' "
+                          f"- re-prompting it next")
     except KeyboardInterrupt:
         print("\nStopped early - saving what we have.")
     finally:
+        undo_poller.close()
         if stream_f:
             stream_f.close()
 
@@ -256,13 +419,15 @@ def main():
         "port": port_name, "simulated": args.simulate,
         "reps_requested": args.reps, "labels": labels,
         "presses_recorded": len(rows), "prompts_skipped": skipped,
+        "presses_deleted": deleted,
         "baseline_ut": baseline,
         "layout": "right-hand 3-row QWERTY (top/home/bottom)",
         "feature_note": "features = calibrated mag (raw - baseline) + buttons",
     }
     meta_path.write_text(json.dumps(meta, indent=2))
 
-    print(f"\nRecorded {len(rows)} presses ({skipped} skipped).")
+    print(f"\nRecorded {len(rows)} presses "
+          f"({skipped} skipped, {deleted} deleted).")
     print(f"  presses : {csv_path}")
     if not args.no_stream:
         print(f"  stream  : {stream_path}")

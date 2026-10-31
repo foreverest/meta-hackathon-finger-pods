@@ -47,6 +47,13 @@ prompted key. Prompts are shuffled, never blocked by key. Output lands
 in `data/` as `session_*.csv` (one row per press, model-ready), a raw
 `*_stream.csv`, and a `.json` with the rest-pose baseline.
 
+Pressed the wrong key? While the next prompt is waiting, press
+Backspace (or Delete, or `u`) on the host keyboard: the most recent
+press is deleted, its key is re-prompted next, and the deletion is
+counted as `presses_deleted` in the session `.json`. Only undo a
+genuinely wrong key — a correct-but-sloppy press is useful training
+data, so keep those.
+
 Collect **at least two sessions, taking the clips off and putting them
 back on in between**. One session can look great and still fail the
 moment the clips move.
