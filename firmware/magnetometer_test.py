@@ -15,7 +15,8 @@ Requires these libraries in the ``lib`` folder on the CIRCUITPY drive:
 ``adafruit_mlx90393`` and ``adafruit_tca9548a`` (plus their dependencies,
 ``adafruit_bus_device`` and ``adafruit_register``).
 
-Copy this file to the board as ``code.py``, open the board in the Mu
+Copy this file to the board as ``code.py`` and ``sensor_discovery.py``
+next to it (board root, not ``lib``), open the board in the Mu
 editor, open the Serial/REPL, and click Plotter. The Mu plotter only
 plots Python tuples, so one tuple is printed every second with the
 X/Y/Z field of every magnetometer found, in microtesla (uT), e.g.
@@ -35,36 +36,30 @@ import board
 import adafruit_mlx90393
 import adafruit_tca9548a
 
+import sensor_discovery
+
 MLX90393_ADDRESSES = (0x0C, 0x0D, 0x0E, 0x0F, 0x18, 0x19, 0x1A, 0x1B)
 
 
 def _transceive_with_timeout(self, payload, rxlen=0):
-    """Bounded version of the MLX90393 library's ``_transceive``.
+    """Bounded, repeated-start version of the library's ``_transceive``.
 
-    The library version retries a register read forever while the sensor
-    returns a zero status byte, so one unresponsive magnetometer hangs
-    the whole script with no output. This version gives up after one
-    second and raises ``OSError`` instead, so the caller can skip that
-    sensor and carry on with the others.
+    Two deviations from the library version, both seen on the mux:
+
+    * Multi-byte payloads (register writes) use ``write_then_readinto``
+      (repeated start, no STOP between write and status read). The
+      library writes with a STOP and then does a naked read for the
+      status byte; some MLX90393 units NAK that read indefinitely
+      through the mux (Errno 19 during initialisation), while the
+      datasheet only documents repeated-start sequences.
+    * The single-byte path is bounded like before: the library retries
+      a zero status byte forever, hanging the script; this version is
+      a single transaction, so a NAK raises ``OSError`` promptly and
+      the caller (sensor discovery) can retry or skip that sensor.
     """
     data = bytearray(rxlen + 1)
-    if len(payload) == 1:
-        with self.i2c_device as i2c:
-            i2c.write_then_readinto(payload, data)
-    else:
-        with self.i2c_device as i2c:
-            i2c.write(payload)
-            start = time.monotonic()
-            while True:
-                try:
-                    i2c.readinto(data)
-                    if data[0]:
-                        break
-                except OSError:
-                    if time.monotonic() - start > 1.0:
-                        raise
-                if time.monotonic() - start > 1.0:
-                    raise OSError("MLX90393 status byte stayed zero for 1 s")
+    with self.i2c_device as i2c:
+        i2c.write_then_readinto(payload, data)
     self._status_last = data[0]
     return data
 
@@ -87,28 +82,20 @@ finally:
 mux = adafruit_tca9548a.PCA9546A(i2c)  # default multiplexer address 0x70
 
 # Find the magnetometers by scanning each multiplexer channel.
-sensors = []
-for channel in range(4):
-    bus = mux[channel]
-    while not bus.try_lock():
-        pass
-    try:
-        found = [address for address in bus.scan() if address != 0x70]
-    finally:
-        bus.unlock()
-    print(f"Multiplexer channel {channel} I2C scan", [hex(a) for a in found])
-    for address in found:
-        if address not in MLX90393_ADDRESSES:
-            continue
-        print("Trying MLX90393 on channel", channel, "at", hex(address))
-        try:
-            sensor = adafruit_mlx90393.MLX90393(bus, address=address)
-        except (ValueError, OSError) as error:
-            print("Channel", channel, "magnetometer failed -", error)
-            continue
-        print("Channel", channel, "magnetometer OK")
-        sensors.append((channel, sensor))
-        break
+# Sensor init is retried (per-attempt and in a second pass): with 2+
+# sensors on the mux, one can answer the scan but NAK during MLX90393
+# initialisation (Errno 19), and a one-shot attempt drops it.
+# Diagnostic: if a sensor still fails, the traceback printed on its
+# first attempt names the exact adafruit_mlx90393.py line/transaction
+# being NAK'd. To test whether the failure follows initialisation
+# ORDER or a physical channel/sensor, temporarily reverse this:
+# CHANNEL_ORDER = (3, 2, 1, 0) -- if channel 2 then initialises and
+# channel 0 fails instead, it is order/state; if channel 2 fails
+# even when initialised first, it is that channel/sensor/cable.
+CHANNEL_ORDER = (0, 1, 2, 3)
+sensors = sensor_discovery.discover_sensors(
+    mux, adafruit_mlx90393.MLX90393, MLX90393_ADDRESSES,
+    channels=CHANNEL_ORDER, show_traceback=True)
 
 if not sensors:
     raise RuntimeError(
