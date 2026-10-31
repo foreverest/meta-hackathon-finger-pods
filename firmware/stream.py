@@ -2,7 +2,16 @@
 
 Streams synchronised magnetometer + button readings to the host over USB
 serial as CSV, as fast as the I2C bus allows (no fixed sleep). Copy this
-file to the board as ``code.py``.
+file to the board as ``code.py``, together with ``button_latch.py``.
+
+Button latency: buttons are polled after every single magnetometer
+read (not once per cycle) and every observed press is latched until it
+has been emitted once, so a quick tap cannot fall between samples. A
+sample is also emitted immediately when a new press is latched, using
+the most recent magnetometer values (some up to one cycle old). The
+magnetometers run with a fast conversion setting (see MAG_FILTER /
+MAG_OVERSAMPLING below): with the library defaults one read blocks
+~220 ms and a whole cycle ~0.7 s, which made short presses invisible.
 
 Wiring (as assembled on Day 3):
   * QT Py STEMMA QT port -> PCA9546A I2C multiplexer (0x70), with one
@@ -37,6 +46,8 @@ import digitalio
 import adafruit_mlx90393
 import adafruit_tca9548a
 
+import button_latch
+
 # --- Buttons -------------------------------------------------------------
 # QT Py GPIO candidates that do not clash with the STEMMA QT I2C pins
 # (SCL/SDA). Edit the order to match the physical wiring; missing pin
@@ -44,6 +55,16 @@ import adafruit_tca9548a
 BUTTON_PIN_NAMES = ("A0", "A1", "A2", "A3", "TX", "RX", "SCK", "MOSI", "MISO")
 
 MLX90393_ADDRESSES = (0x0C, 0x0D, 0x0E, 0x0F, 0x18, 0x19, 0x1A, 0x1B)
+
+# Magnetometer conversion speed. The MLX90393 driver sleeps for the
+# conversion time on every read; the datasheet lookup is roughly:
+#   FILTER_7/OSR_3 (library default): ~200 ms per read  -> unusable
+#   FILTER_2/OSR_1 (below):           ~3 ms per read
+#   FILTER_0/OSR_0 (fastest):         ~1.3 ms per read, noisier
+# Gain/resolution are untouched, so values stay in the same uT scale;
+# lower filter/oversampling only trades a little noise for speed.
+MAG_FILTER = 2        # adafruit_mlx90393.FILTER_2
+MAG_OVERSAMPLING = 1  # adafruit_mlx90393.OSR_1
 
 
 def _transceive_with_timeout(self, payload, rxlen=0):
@@ -149,6 +170,15 @@ def setup_magnetometers(i2c):
                 continue
             try:
                 sensor = adafruit_mlx90393.MLX90393(bus, address=address)
+                # Fast conversion (see MAG_FILTER above). Best-effort:
+                # a sensor that rejects the setting still works, just
+                # at the slow default rate.
+                try:
+                    sensor.filter = MAG_FILTER
+                    sensor.oversampling = MAG_OVERSAMPLING
+                except (ValueError, OSError) as error:
+                    print("# channel", channel,
+                          "fast conversion setting failed -", error)
             except (ValueError, OSError) as error:
                 print("# channel", channel, "magnetometer failed -", error)
                 continue
@@ -196,21 +226,42 @@ header += ["b%d" % i for i in range(len(buttons))]
 print("# " + ",".join(header))
 print("# streaming - one CSV line per sample")
 
+print("# mag conversion: filter", MAG_FILTER,
+      "oversampling", MAG_OVERSAMPLING, "(~3 ms per sensor read)")
+
 start = time.monotonic()
-while True:
+latch = button_latch.PressLatch(len(buttons))
+mag_cache = [0.0] * (3 * len(sensors))
+
+
+def read_buttons():
+    return [0 if btn.value else 1 for btn in buttons]  # pressed = LOW
+
+
+def emit_sample():
+    states = read_buttons()
+    latch.poll(states)
+    out = latch.take_output(states)
     values = [str(int((time.monotonic() - start) * 1000))]
-    for _channel, sensor in sensors:
+    values += ["%.2f" % v for v in mag_cache]
+    values += [str(b) for b in out]
+    print(",".join(values))
+
+
+while True:
+    for idx, (_channel, sensor) in enumerate(sensors):
         try:
             mx, my, mz = sensor.magnetic
+            mag_cache[3 * idx:3 * idx + 3] = [mx, my, mz]
         except OSError:
             # A failed transfer can leave the main bus locked inside
-            # the mux-channel lock; release it so the next read (and
-            # the host's next sample) is not stuck spinning forever.
+            # the mux-channel lock; release it so the next read is not
+            # stuck spinning forever. Keep the last good values.
             _force_unlock(i2c)
-            mx, my, mz = 0.0, 0.0, 0.0
-        values.append("%.2f" % mx)
-        values.append("%.2f" % my)
-        values.append("%.2f" % mz)
-    for btn in buttons:
-        values.append("0" if btn.value else "1")  # pressed pulls pin LOW
-    print(",".join(values))
+        # Poll buttons between sensor reads: this bounds press
+        # detection latency to one sensor read (~ms), and the latch
+        # guarantees a tap seen here survives until it is emitted.
+        latch.poll(read_buttons())
+        if latch.pending:
+            emit_sample()  # new press: emit now, don't wait for cycle end
+    emit_sample()

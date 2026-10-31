@@ -25,8 +25,13 @@ pip install -r host/requirements.txt
 ## 1. Flash the streaming firmware
 
 Copy [firmware/stream.py](../firmware/stream.py) to the QT Py as
-`code.py` (with `adafruit_mlx90393` and `adafruit_tca9548a` in `lib/`).
+`code.py`, together with `firmware/button_latch.py` (with
+`adafruit_mlx90393` and `adafruit_tca9548a` in `lib/`).
 It streams `t_ms, 9x magnetometer, 9x buttons` as CSV at 115200 baud.
+Buttons are polled between magnetometer reads and presses are latched
+until emitted, and the magnetometers use a fast conversion setting
+(~3 ms/read instead of the ~220 ms library default), so quick taps
+are not lost between samples.
 Check the `# buttons:` / `# sensors` diagnostics in a serial console —
 and make sure `BUTTON_PIN_NAMES` order in that file matches your wiring.
 
