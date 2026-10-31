@@ -1,3 +1,11 @@
 # OS / editor
 .DS_Store
 .vscode/
+
+# Python
+.venv/
+__pycache__/
+
+# Collected data and trained models (regenerable, can be large)
+data/
+models/
